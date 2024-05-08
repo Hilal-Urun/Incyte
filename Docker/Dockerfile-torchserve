@@ -1,0 +1,46 @@
+FROM python:3.10-slim AS setup
+
+ENV PYTHONUNBUFFERED 1
+
+RUN groupadd -r app && useradd --no-log-init -d /app -r -g app app
+
+RUN apt-get update
+RUN apt-get install --no-install-recommends -y gcc g++ git cmake make default-jre
+RUN pip install --no-cache-dir --upgrade pip wheel setuptools
+
+
+FROM setup AS download
+
+WORKDIR /tmp/torchserve
+
+RUN CXX=$(which gcc) pip install --no-cache-dir --upgrade sentence_transformers
+
+COPY ./Docker/Models/models_downloader.py .
+
+RUN python models_downloader.py
+
+
+FROM download AS compress
+
+COPY ./Docker/Models/bi_encoder_handler.py .
+
+RUN pip install --no-cache-dir --upgrade torch-model-archiver
+
+RUN torch-model-archiver --model-name bi_encoder --version 1.0 --serialized-file bi_encoder/pytorch_model.bin --extra-files "./bi_encoder/config.json,./bi_encoder/vocab.txt" --handler ./bi_encoder_handler.py -f
+
+
+FROM compress AS app
+
+WORKDIR /app
+
+RUN pip install --no-cache-dir --upgrade torchserve
+
+RUN mkdir -p model-store
+RUN mv /tmp/torchserve/*.mar model-store/
+RUN rm -rf /tmp/torchserve
+
+COPY ./Docker/Models/config.properties .
+
+EXPOSE 8080
+
+ENTRYPOINT ["torchserve", "--start", "--foreground", "--ts-config", "config.properties"]
